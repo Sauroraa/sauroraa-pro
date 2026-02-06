@@ -1,0 +1,46 @@
+# ============================================================================
+# Sauroraa Pro - Docker Compose
+# ============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=db
+      - DB_USER=phpmyadmin
+      - DB_PASSWORD=TmLq9zEwH8bxc4WhZlQZ
+      - DB_NAME=sauroraa_pro
+      - JWT_SECRET=d9uRHqKO2xazwxoPxFuY02NqP9MeiW15fiAGW5bewZI
+      - JWT_EXPIRES_IN=7d
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: mariadb:10.11
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=TmLq9zEwH8bxc4WhZlQZ
+      - MYSQL_DATABASE=sauroraa_pro
+      - MYSQL_USER=phpmyadmin
+      - MYSQL_PASSWORD=TmLq9zEwH8bxc4WhZlQZ
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  mariadb_data:
