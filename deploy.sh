@@ -150,7 +150,10 @@ setup_env() {
         print_warning ".env file not found. Creating from example..."
         cat > .env << 'EOF'
 # Database (MariaDB/MySQL)
-DATABASE_URL="mysql://root:password@localhost:3306/sauroraa_pro"
+DB_HOST=localhost
+DB_USER=sauroraa
+DB_PASSWORD=sauroraa_password
+DB_NAME=sauroraa_pro
 
 # Authentication
 JWT_SECRET="change-this-secret-key-in-production-min-32-chars"
@@ -181,13 +184,13 @@ GRANT ALL PRIVILEGES ON sauroraa_pro.* TO 'sauroraa'@'localhost';
 FLUSH PRIVILEGES;
 EOSQL
     
-    # Generate Prisma client
-    print_status "Generating Prisma client..."
-    npx prisma generate
+    # Generate Prisma client (not needed - using raw SQL)
+    # print_status "Generating Prisma client..."
+    # npx prisma generate
     
-    # Run migrations
+    # Run database migrations using raw SQL
     print_status "Running database migrations..."
-    npx prisma db push
+    $SUDO mysql -u root -p < database/schema.sql
     
     print_status "Database setup complete"
 }
