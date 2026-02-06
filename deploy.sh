@@ -135,7 +135,7 @@ install_dependencies() {
         rm -rf node_modules
     fi
     
-    npm ci --only=production
+    npm install --only=production
     
     print_status "Dependencies installed"
 }
