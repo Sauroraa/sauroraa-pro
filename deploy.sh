@@ -190,7 +190,7 @@ EOSQL
     
     # Run database migrations using raw SQL
     print_status "Running database migrations..."
-    $SUDO mysql -u root -p < database/schema.sql
+    $SUDO mysql -u root -p < <(echo "USE sauroraa_pro;" && cat database/schema.sql)
     
     print_status "Database setup complete"
 }
