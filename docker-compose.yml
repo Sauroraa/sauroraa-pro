@@ -25,8 +25,9 @@ services:
 
   db:
     image: mariadb:10.11
-    ports:
-      - "3306:3306"
+    # Don't expose port 3306 - database is only accessible from app container
+    # ports:
+    #   - "3306:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=TmLq9zEwH8bxc4WhZlQZ
       - MYSQL_DATABASE=sauroraa_pro
