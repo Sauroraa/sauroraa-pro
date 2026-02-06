@@ -15,6 +15,8 @@ NC='\033[0m'
 
 PROJECT_NAME="sauroraa-pro"
 DEPLOY_DIR="/var/www/$PROJECT_NAME"
+DOMAIN="pro.sauroraa.be"
+PORT=3001
 
 print_status() { echo -e "${GREEN}[✓]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
@@ -26,7 +28,8 @@ check_root() {
 }
 
 check_prerequisites() {
-    print_step "Checking Docker..."
+    print_step "Checking prerequisites..."
+    
     if ! command -v docker &> /dev/null; then
         print_error "Docker not installed"
         exit 1
@@ -39,8 +42,25 @@ check_prerequisites() {
     fi
     print_status "Docker Compose: $(docker compose version)"
     
-    if ! command -v git &> /dev/null; then
-        $SUDO apt-get update && $SUDO apt-get install -y git
+    if ! command -v nginx &> /dev/null; then
+        print_warning "Nginx not installed, will install..."
+    fi
+    
+    if ! command -v certbot &> /dev/null; then
+        print_warning "Certbot not installed, will install..."
+    fi
+}
+
+install_nginx_certbot() {
+    if ! command -v nginx &> /dev/null; then
+        print_step "Installing Nginx..."
+        $SUDO apt-get update
+        $SUDO apt-get install -y nginx
+    fi
+    
+    if ! command -v certbot &> /dev/null; then
+        print_step "Installing Certbot..."
+        $SUDO apt-get install -y certbot python3-certbot-nginx
     fi
 }
 
@@ -77,7 +97,7 @@ start_docker() {
     print_status "Starting containers..."
     $SUDO docker compose up -d
     
-    print_status "Containers started"
+    print_status "Containers started on port $PORT"
 }
 
 wait_for_db() {
@@ -101,38 +121,146 @@ setup_db() {
     wait_for_db
     
     print_status "Running schema..."
-    $SUDO docker compose exec -T db mysql -u sauroraa -psauroraa_password sauroraa_pro < database/schema.sql 2>/dev/null || \
-    $SUDO docker compose exec -T db mysql -u root -proot_password sauroraa_pro < database/schema.sql 2>/dev/null || \
+    $SUDO docker compose exec -T db mysql -u phpmyadmin -pTmLq9zEwH8bxc4WhZlQZ sauroraa_pro < database/schema.sql 2>/dev/null || \
+    $SUDO docker compose exec -T db mysql -u root -pTmLq9zEwH8bxc4WhZlQZ sauroraa_pro < database/schema.sql 2>/dev/null || \
     print_warning "Schema may already exist"
     
     print_status "Database ready"
 }
 
+configure_nginx() {
+    print_step "Configuring Nginx for $DOMAIN..."
+    
+    # Create nginx config
+    cat > /tmp/${DOMAIN}.conf << EOF
+server {
+    server_name $DOMAIN;
+    
+    location / {
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+    }
+    
+    # SSL configuration will be added by Certbot
+    listen 80;
+}
+EOF
+    
+    $SUDO cp /tmp/${DOMAIN}.conf /etc/nginx/sites-available/${DOMAIN}
+    $SUDO ln -sf /etc/nginx/sites-available/${DOMAIN} /etc/nginx/sites-enabled/
+    
+    # Remove default
+    $SUDO rm -f /etc/nginx/sites-enabled/default
+    
+    # Test nginx config
+    $SUDO nginx -t
+    
+    $SUDO systemctl reload nginx
+    
+    print_status "Nginx configured"
+}
+
+setup_ssl() {
+    print_step "Setting up SSL with Certbot..."
+    
+    # Check if port 80 is accessible (not blocked)
+    if [[ -f /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ]]; then
+        print_warning "SSL certificate already exists for $DOMAIN"
+        
+        # Update nginx config with SSL
+        cat > /etc/nginx/sites-available/${DOMAIN} << EOF
+server {
+    server_name $DOMAIN;
+    
+    location / {
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+    }
+    
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+EOF
+        
+        $SUDO nginx -t
+        $SUDO systemctl reload nginx
+        print_status "SSL configuration updated"
+        return 0
+    fi
+    
+    # Get SSL certificate
+    print_status "Requesting SSL certificate for $DOMAIN..."
+    $SUDO certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email admin@$DOMAIN
+    
+    if [[ $? -eq 0 ]]; then
+        print_status "SSL certificate obtained!"
+    else
+        print_warning "SSL certificate failed, running on HTTP only"
+        print_warning "Make sure port 80 is open and domain DNS points to this server"
+    fi
+}
+
 verify() {
-    print_step "Verifying..."
+    print_step "Verifying deployment..."
     cd "$DEPLOY_DIR"
     
     if $SUDO docker compose ps | grep -q "Up"; then
-        print_status "App: Running"
+        print_status "App container: Running on port $PORT"
     else
         print_warning "Check logs with: sudo docker compose logs"
+    fi
+    
+    # Check nginx status
+    if systemctl is-active --quiet nginx; then
+        print_status "Nginx: Running"
+    fi
+    
+    # Check SSL
+    if [[ -f /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ]]; then
+        print_status "SSL: Enabled"
+    else
+        print_warning "SSL: Not configured (run with --ssl flag when ready)"
     fi
 }
 
 main() {
     echo ""
     echo "========================================================================"
-    echo -e "${BLUE}Sauroraa Pro - Docker Deployment${NC}"
+    echo -e "${BLUE}Sauroraa Pro - Docker Deployment with Nginx${NC}"
     echo "========================================================================"
     echo ""
     
     check_root
-    check_prerequisites
+    install_nginx_certbot
     setup_directories
     deploy_code
     start_docker
     wait_for_db
     setup_db
+    configure_nginx
+    
+    # Check if we should setup SSL
+    if [[ "$1" == "--ssl" ]]; then
+        setup_ssl
+    fi
+    
     verify
     
     echo ""
@@ -140,12 +268,15 @@ main() {
     echo -e "${GREEN}Deployment Complete!${NC}"
     echo "========================================================================"
     echo ""
-    echo "Commands:"
-    echo -e "  ${BLUE}Logs:${NC}   cd $DEPLOY_DIR && sudo docker compose logs -f"
-    echo -e "  ${BLUE}Restart:${NC} cd $DEPLOY_DIR && sudo docker compose restart"
-    echo -e "  ${BLUE}Stop:${NC}   cd $DEPLOY_DIR && sudo docker compose down"
+    echo "Domain: https://$DOMAIN"
     echo ""
-    echo "App URL: http://localhost:3000"
+    echo "Commands:"
+    echo -e "  ${BLUE}Logs:${NC}       cd $DEPLOY_DIR && sudo docker compose logs -f"
+    echo -e "  ${BLUE}Restart:${NC}   cd $DEPLOY_DIR && sudo docker compose restart"
+    echo -e "  ${BLUE}Stop:${NC}       cd $DEPLOY_DIR && sudo docker compose down"
+    echo -e "  ${BLUE}SSL setup:${NC} sudo $0 --ssl"
+    echo ""
+    echo "SSL certificate: https://$DOMAIN (after running --ssl)"
     echo "========================================================================"
 }
 
